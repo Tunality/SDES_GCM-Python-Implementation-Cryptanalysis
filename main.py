@@ -1,17 +1,20 @@
 import brute_force
-import nonce_attack
 import bit_flip
 import kpa_analysis
-import linear_analysis
 import side_channel
 
 # --- S-DES CORE FUNCTIONS ---
+
+S0 = [[1, 0, 3, 2], [3, 2, 1, 0], [0, 2, 1, 3], [3, 1, 3, 2]]
+S1 = [[0, 1, 2, 3], [2, 0, 1, 3], [3, 0, 1, 0], [2, 1, 0, 3]]
+
 
 def key_generation(key):
     p10 = [key[2], key[4], key[1], key[6], key[3], key[9], key[0], key[8], key[7], key[5]]
     k1, ls1 = k1_generation(p10)
     k2 = k2_generation(ls1)
     return k1, k2
+
 
 def k1_generation(p10):
     ls1_1 = [p10[1], p10[2], p10[3], p10[4], p10[0]]
@@ -20,6 +23,7 @@ def k1_generation(p10):
     p8 = [ls1[5], ls1[2], ls1[6], ls1[3], ls1[7], ls1[4], ls1[9], ls1[8]]
     return p8, ls1
 
+
 def k2_generation(ls1):
     ls2_1 = [ls1[2], ls1[3], ls1[4], ls1[0], ls1[1]]
     ls2_2 = [ls1[7], ls1[8], ls1[9], ls1[5], ls1[6]]
@@ -27,21 +31,22 @@ def k2_generation(ls1):
     p8 = [ls2[5], ls2[2], ls2[6], ls2[3], ls2[7], ls2[4], ls2[9], ls2[8]]
     return p8
 
+
 def sbox(bits, box):
     row = int(f"{bits[0]}{bits[3]}", 2)
     col = int(f"{bits[1]}{bits[2]}", 2)
     val = box[row][col]
     return [int(b) for b in format(val, '02b')]
 
+
 def fk(bits, key):
     L, R = bits[:4], bits[4:]
     ep = [R[3], R[0], R[1], R[2], R[1], R[2], R[3], R[0]]
     xor_res = [ep[i] ^ key[i] for i in range(8)]
-    S0 = [[1, 0, 3, 2], [3, 2, 1, 0], [0, 2, 1, 3], [3, 1, 3, 2]]
-    S1 = [[0, 1, 2, 3], [2, 0, 1, 3], [3, 0, 1, 0], [2, 1, 0, 3]]
     f_out = sbox(xor_res[:4], S0) + sbox(xor_res[4:], S1)
     p4 = [f_out[1], f_out[3], f_out[2], f_out[0]]
     return [L[i] ^ p4[i] for i in range(4)] + R
+
 
 def sdes_encrypt(block, key):
     k1, k2 = key_generation(key)
@@ -51,20 +56,24 @@ def sdes_encrypt(block, key):
     step2 = fk(sw, k2)
     return [step2[3], step2[0], step2[2], step2[4], step2[6], step2[1], step2[7], step2[5]]
 
+
 # --- GCM MODE FUNCTIONS ---
 
 def xor_bits(a, b):
     return [i ^ j for i, j in zip(a, b)]
+
 
 def ghash(cipher_blocks, h_key):
     tag = [0] * 8
     for block in cipher_blocks:
         tag = xor_bits(tag, block)
         tag = xor_bits(tag, h_key)
+
     return tag
 
+
 def sdes_gcm_encrypt(text, key_bits, iv):
-    h_key = sdes_encrypt([0]*8, key_bits)
+    h_key = sdes_encrypt([0] * 8, key_bits)
     cipher_blocks = []
     counter = iv[:]
     for char in text:
@@ -76,7 +85,18 @@ def sdes_gcm_encrypt(text, key_bits, iv):
     tag = ghash(cipher_blocks, h_key)
     return cipher_blocks, tag
 
-def sdes_gcm_decrypt(cipher_blocks, key_bits, iv):
+
+# The expected_tag parameter is optional to preserve backward compatibility
+# with the cryptanalysis modules (brute_force, kpa_analysis, etc.) that call
+# this function without a tag. When provided, the tag is verified BEFORE any
+# plaintext is returned, matching proper GCM semantics.
+def sdes_gcm_decrypt(cipher_blocks, key_bits, iv, expected_tag=None):
+    if expected_tag is not None:
+        h_key = sdes_encrypt([0] * 8, key_bits)
+        computed_tag = ghash(cipher_blocks, h_key)
+        if computed_tag != expected_tag:
+            raise ValueError("Authentication tag mismatch — ciphertext may have been tampered with!")
+
     chars = []
     counter = iv[:]
     for block in cipher_blocks:
@@ -87,13 +107,24 @@ def sdes_gcm_decrypt(cipher_blocks, key_bits, iv):
         counter = [int(x) for x in format(c_val, '08b')]
     return "".join(chars)
 
+
 def main():
     print("--- S-DES GCM System ---")
     pt = input("Enter String: ")
     k_str = input("Enter 10-bit Key: ")
+
+    # Input validation for the key — must be exactly 10 binary digits
+    if len(k_str) != 10 or not all(b in '01' for b in k_str):
+        print("Error: Key must be exactly 10 binary digits (e.g. 1010000010).")
+        return
+
     key = [int(b) for b in k_str]
+
+    # N.B. The IV is fixed to all-zeros for demonstration purposes.
+    # In a real system, the IV must be unique (random) for every message
+    # encrypted with the same key, to prevent nonce-reuse attacks.
     iv = [0] * 8
-    
+
     c_blocks, tag = sdes_gcm_encrypt(pt, key, iv)
     print(f"\nEncryption Complete.")
     print(f"Ciphertext: {c_blocks[:2]}...")
@@ -103,57 +134,53 @@ def main():
         print("\n--- MENU ---")
         print("1. Decrypt (Standard)")
         print("2. Brute Force Attack")
-        print("3. Nonce Reuse Attack (Requires 2nd message)")
-        print("4. Bit-Flip Attack (Integrity Test)")
-        print("5. KPA and Tag Collision Analysis")
-        print("6. Linear Cryptanalysis Summary")
-        print("7. Side-Channel Timing Test")
+        print("3. Bit-Flip Attack (Integrity Test)")
+        print("4. KPA and Tag Collision Analysis")
+        print("5. Side-Channel Timing Test")
         print("0. Exit")
 
         choice = input("Select an option: ")
 
         if choice == '1':
-            print(f"Result: {sdes_gcm_decrypt(c_blocks, key, iv)}")
-        
+            # Pass the tag so decrypt verifies integrity before returning plaintext
+            try:
+                result = sdes_gcm_decrypt(c_blocks, key, iv, expected_tag=tag)
+                print(f"Result: {result}")
+            except ValueError as e:
+                print(f"Decryption failed: {e}")
+
         elif choice == '2':
             f_key, f_text = brute_force.run_attack(c_blocks, tag, iv, sdes_gcm_decrypt, sdes_encrypt)
             print(f"Attack Result -> Key: {f_key}, Text: {f_text}")
-            
-        elif choice == '3':
-            pt2 = input("Enter a second string to encrypt with SAME key/IV: ")
-            c2, t2 = sdes_gcm_encrypt(pt2, key, iv)
-            # Pass the original plaintext to show the exploit
-            nonce_attack.run_attack(c_blocks, c2, pt)
 
-        elif choice == '4':
+        elif choice == '3':
             mod_cipher = bit_flip.run_attack(c_blocks)
-            # Try to decrypt and check tag
-            h_key = sdes_encrypt([0]*8, key)
+            h_key = sdes_encrypt([0] * 8, key)
             new_tag = ghash(mod_cipher, h_key)
             print(f"Original Tag: {tag}")
             print(f"New Tag:      {new_tag}")
             if new_tag != tag:
                 print("SUCCESS: GCM detected tampering! Tag mismatch.")
+
             else:
                 print("FAILURE: Tampering not detected.")
-        elif choice == '5':
-            # Enhanced KPA with inline results
+
+        elif choice == '4':
             final_k, final_pt = kpa_analysis.run_analysis(pt, c_blocks, iv, sdes_encrypt, sdes_gcm_decrypt)
             print(f"\n[+] KPA SUCCESS!")
             print(f"Confirmed Key: {final_k}")
             print(f"Full Plaintext: {final_pt}")
 
-        elif choice == '6':
-            linear_analysis.run_analysis()
-
-        elif choice == '7':
-            side_channel.run_analysis(sdes_encrypt, [0]*8, key)
+        elif choice == '5':
+            side_channel.run_analysis(sdes_encrypt, [0] * 8, key)
 
         elif choice == '0':
             print("Terminating...")
             break
+
         else:
             print("Invalid choice.")
+
 
 if __name__ == "__main__":
     main()
